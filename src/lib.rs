@@ -16,7 +16,6 @@
 
 #![doc(html_root_url = "https://docs.rs/log-panics/2.0.0")]
 #![warn(missing_docs)]
-
 // Enable feature requirements on docs.rs.
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
@@ -26,7 +25,7 @@ extern crate log;
 #[cfg(feature = "with-backtrace")]
 extern crate backtrace;
 
-use std::{fmt, panic, thread};
+use std::{fmt, panic, thread, time::Duration};
 
 use backtrace::Backtrace;
 
@@ -64,7 +63,7 @@ pub enum BacktraceMode {
     /// Backtraces will include addresses, but no symbol names or locations.
     Unresolved,
     /// Backtraces will include addresses as well as symbol names and locations when possible.
-    Resolved
+    Resolved,
 }
 
 /// Configures the panic hook, ending with initialization.
@@ -83,6 +82,10 @@ pub struct Config {
     // so that inlining can eliminate references to `Backtrace::default`
     // if symbolication is not desired.
     make_backtrace: fn() -> Backtrace,
+    /// Optional receiver to wait for cleanup tasks to complete.
+    cleanup_ready: Option<flume::Receiver<()>>,
+    /// Timeout duration for waiting on cleanup tasks.
+    timeout: Option<Duration>,
 }
 
 impl Config {
@@ -90,6 +93,8 @@ impl Config {
     pub fn new() -> Self {
         Self {
             make_backtrace: Backtrace::default,
+            cleanup_ready: None,
+            timeout: None,
         }
     }
 
@@ -106,13 +111,36 @@ impl Config {
         self
     }
 
+    /// Sets the cleanup ready receiver.
+    ///
+    /// This receiver will be used to wait for cleanup tasks to complete before the panic hook finishes.
+    pub fn cleanup_ready(mut self, cleanup_ready: flume::Receiver<()>) -> Self {
+        self.cleanup_ready = Some(cleanup_ready);
+        self
+    }
+
+    /// Sets the timeout duration for waiting on cleanup tasks.
+    ///
+    /// The default timeout is 60 seconds if not specified.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
     /// Initializes the panic hook.
     ///
     /// After this method is called, all panics will be logged rather than printed
     /// to standard error.
-    pub fn install_panic_hook(self) {
+    pub fn install_panic_hook(self) -> flume::Receiver<()> {
+        let (panic_notifier, recv) = flume::unbounded();
+        let cleanup_ready = self.cleanup_ready;
+        let timeout = self.timeout.unwrap_or_else(|| Duration::from_secs(60));
+
         panic::set_hook(Box::new(move |info| {
             let backtrace = (self.make_backtrace)();
+
+            // Notify to subscribers that a panic occurred
+            let _ = panic_notifier.send(());
 
             let thread = thread::current();
             let thread = thread.name().unwrap_or("<unnamed>");
@@ -143,8 +171,15 @@ impl Config {
                     msg,
                     Shim(backtrace)
                 ),
-            }
+            };
+
+            // Wait for any cleanup tasks to complete
+            let _ = cleanup_ready
+                .as_ref()
+                .map(|recv| recv.recv_timeout(timeout));
         }));
+
+        recv
     }
 }
 
@@ -160,6 +195,6 @@ impl Default for Config {
 /// to standard error.
 ///
 /// See [`Config`] for more information.
-pub fn init() {
+pub fn init() -> flume::Receiver<()> {
     Config::new().install_panic_hook()
 }
