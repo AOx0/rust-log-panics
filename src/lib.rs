@@ -171,11 +171,15 @@ impl Config {
             };
 
             // Notify to subscribers that a panic occurred
-            let _ = panic_notifier.send(());
+            let res = panic_notifier.send(());
+            warn!("Sent panic notification {res:?}");
+
             // Wait for any cleanup tasks to complete
-            let _ = cleanup_ready
-                .as_ref()
-                .map(|recv| recv.recv_timeout(timeout));
+            let res = cleanup_ready.as_ref().map(|recv| {
+                warn!("Waiting for cleanup vobo");
+                recv.recv_timeout(timeout)
+            });
+            warn!("VoBo: {res:?}");
         }));
 
         recv
