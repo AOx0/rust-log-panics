@@ -139,9 +139,6 @@ impl Config {
         panic::set_hook(Box::new(move |info| {
             let backtrace = (self.make_backtrace)();
 
-            // Notify to subscribers that a panic occurred
-            let _ = panic_notifier.send(());
-
             let thread = thread::current();
             let thread = thread.name().unwrap_or("<unnamed>");
 
@@ -173,6 +170,8 @@ impl Config {
                 ),
             };
 
+            // Notify to subscribers that a panic occurred
+            let _ = panic_notifier.send(());
             // Wait for any cleanup tasks to complete
             let _ = cleanup_ready
                 .as_ref()
